@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek Bridge",
+  "version": "0.1.0",
+  "description": "把本地代理的请求转发到已登录的 DeepSeek 网页会话",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs"],
+  "host_permissions": ["https://chat.deepseek.com/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
