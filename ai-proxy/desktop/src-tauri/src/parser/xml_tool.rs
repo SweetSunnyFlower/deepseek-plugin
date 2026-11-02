@@ -55,8 +55,9 @@ impl XmlToolParser {
                     Some(idx) => {
                         let tail = &self.buf[idx..];
                         let partial_close = (tail.starts_with("</tool_call")
-                            || tail.starts_with("</｜DSML｜invoke")
-                            || tail.starts_with("</|DSML|invoke"))
+                            || dsml_head(tail)
+                                .map(|h| h.close && h.kind == DsmlKind::Invoke)
+                                .unwrap_or(false))
                             && !tail.contains('>');
                         if partial_close && !final_ {
                             self.call = Some(call);
@@ -97,6 +98,36 @@ impl XmlToolParser {
                         drop_to_gt(&mut self.buf);
                         continue;
                     }
+                    if let Some(head) = dsml_head(&self.buf) {
+                        match (head.close, head.kind) {
+                            (false, DsmlKind::Invoke) => {
+                                if let Some((len, name)) = parse_named(&self.buf, head.end) {
+                                    let open = self.buf[..len].to_string();
+                                    self.buf.drain(..len);
+                                    self.call = Some(Call {
+                                        name,
+                                        open,
+                                        body: String::new(),
+                                    });
+                                    continue;
+                                }
+                                if !final_ && !self.buf.contains('>') {
+                                    return out;
+                                }
+                            }
+                            (true, DsmlKind::Invoke)
+                            | (_, DsmlKind::Calls)
+                            | (_, DsmlKind::Parameter) => {
+                                if self.buf.contains('>') {
+                                    drop_to_gt(&mut self.buf);
+                                    continue;
+                                }
+                                if !final_ {
+                                    return out;
+                                }
+                            }
+                        }
+                    }
                     if let Some((len, name)) = parse_start(&self.buf) {
                         let open = self.buf[..len].to_string();
                         self.buf.drain(..len);
@@ -106,19 +137,6 @@ impl XmlToolParser {
                             body: String::new(),
                         });
                         continue;
-                    }
-                    if self.buf.starts_with("<｜DSML｜")
-                        || self.buf.starts_with("</｜DSML｜")
-                        || self.buf.starts_with("<|DSML|")
-                        || self.buf.starts_with("</|DSML|")
-                    {
-                        if self.buf.contains('>') {
-                            drop_to_gt(&mut self.buf);
-                            continue;
-                        }
-                        if !final_ {
-                            return out;
-                        }
                     }
                     if !final_ && is_partial_marker(&self.buf) {
                         return out;
@@ -146,26 +164,26 @@ impl XmlToolParser {
 }
 
 const XML_BODY_MARKERS: [&str; 3] = ["</tool_call", "<tool_call", "<tool_result"];
-const DSML_BODY_MARKERS: [&str; 4] = [
-    "</｜DSML｜invoke",
-    "<｜DSML｜invoke",
-    "</|DSML|invoke",
-    "<|DSML|invoke",
-];
 
 fn find_body_end(s: &str) -> Option<usize> {
-    XML_BODY_MARKERS
+    let mut best: Option<usize> = XML_BODY_MARKERS
         .iter()
-        .chain(DSML_BODY_MARKERS.iter())
-        .filter_map(|m| s.find(*m))
-        .min()
+        .filter_map(|m| s.find(m))
+        .min();
+    for (pos, head) in dsml_marks(s) {
+        if head.kind == DsmlKind::Invoke {
+            best = Some(best.map_or(pos, |b| b.min(pos)));
+        }
+    }
+    best
 }
 
 fn close_len(s: &str) -> usize {
-    let closes_dsml = DSML_BODY_MARKERS
-        .iter()
-        .any(|m| m.starts_with("</") && s.starts_with(m));
-    if s.starts_with("</tool_call") || closes_dsml {
+    let closes = s.starts_with("</tool_call")
+        || dsml_head(s)
+            .map(|h| h.close && h.kind == DsmlKind::Invoke)
+            .unwrap_or(false);
+    if closes {
         s.find('>').map(|i| i + 1).unwrap_or(s.len())
     } else {
         0
@@ -178,22 +196,17 @@ fn drop_to_gt(buf: &mut String) {
 }
 
 fn parse_start(s: &str) -> Option<(usize, String)> {
-    if s.starts_with("<tool_call") {
-        return parse_named(s, "<tool_call".len());
+    if !s.starts_with("<tool_call") {
+        return None;
     }
-    for prefix in ["<｜DSML｜", "<|DSML|"] {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            let rest = rest.strip_prefix("function_").unwrap_or(rest);
-            let after = rest.strip_prefix("invoke")?;
-            let head_len = s.len() - after.len();
-            return parse_named(s, head_len);
-        }
-    }
-    None
+    parse_named(s, "<tool_call".len())
 }
 
 fn parse_named(s: &str, head_len: usize) -> Option<(usize, String)> {
-    let rest = s[head_len..].strip_prefix(|c: char| c.is_whitespace())?;
+    let rest = &s[head_len..];
+    let rest = rest
+        .strip_prefix(|c: char| c.is_whitespace())
+        .unwrap_or(rest);
     let rest = rest.strip_prefix("name")?;
     let rest = rest.trim_start_matches(char::is_whitespace).strip_prefix('=')?;
     let rest = rest.trim_start_matches(char::is_whitespace).strip_prefix('"')?;
@@ -208,17 +221,155 @@ fn is_partial_marker(s: &str) -> bool {
     if s.len() > 60 || s.contains('>') {
         return false;
     }
-    [
-        "<tool_call",
-        "</tool_call",
-        "<tool_result",
-        "<｜DSML｜",
-        "</｜DSML｜",
-        "<|DSML|",
-        "</|DSML|",
-    ]
+    ["<tool_call", "</tool_call", "<tool_result"]
         .iter()
         .any(|m| m.starts_with(s) || s.starts_with(m))
+        || is_dsml_prefix(s)
+}
+
+fn is_dsml_prefix(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'<') {
+        return false;
+    }
+    let mut i = 1;
+    if b.get(i) == Some(&b'/') {
+        i += 1;
+    }
+    while i < b.len() {
+        if b[i..].starts_with("｜".as_bytes()) {
+            i += 3;
+        } else if b[i] == b'|' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if i >= b.len() {
+        return true;
+    }
+    let rest0 = &b[i..];
+    if !("DSML".as_bytes().starts_with(rest0) || rest0.starts_with(b"DSML")) {
+        return false;
+    }
+    if rest0.len() < 4 {
+        return true;
+    }
+    i += 4;
+    while i < b.len() {
+        if b[i..].starts_with("｜".as_bytes()) {
+            i += 3;
+        } else if b[i] == b'|' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    let rest = rest_raw_trimmed(&s[i..]);
+    if rest.is_empty() {
+        return true;
+    }
+    [
+        "function_invoke",
+        "invoke",
+        "function_calls",
+        "calls",
+        "parameter",
+    ]
+    .iter()
+    .any(|kw| kw.starts_with(rest))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DsmlKind {
+    Invoke,
+    Parameter,
+    Calls,
+}
+
+struct DsmlHead {
+    close: bool,
+    kind: DsmlKind,
+    end: usize,
+}
+
+fn dsml_marks(s: &str) -> Vec<(usize, DsmlHead)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(pos) = s[i..].find('<') {
+        let abs = i + pos;
+        if let Some(head) = dsml_head(&s[abs..]) {
+            out.push((abs, head));
+        }
+        i = abs + 1;
+    }
+    out
+}
+
+fn dsml_head(s: &str) -> Option<DsmlHead> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'<') {
+        return None;
+    }
+    let mut i = 1;
+    let close = b.get(i) == Some(&b'/');
+    if close {
+        i += 1;
+    }
+    let mut pipes = 0;
+    while i < b.len() {
+        if b[i..].starts_with("｜".as_bytes()) {
+            i += 3;
+            pipes += 1;
+        } else if b[i] == b'|' {
+            i += 1;
+            pipes += 1;
+        } else {
+            break;
+        }
+    }
+    if pipes == 0 || !b[i..].starts_with(b"DSML") {
+        return None;
+    }
+    i += 4;
+    let mut pipes2 = 0;
+    while i < b.len() {
+        if b[i..].starts_with("｜".as_bytes()) {
+            i += 3;
+            pipes2 += 1;
+        } else if b[i] == b'|' {
+            i += 1;
+            pipes2 += 1;
+        } else {
+            break;
+        }
+    }
+    if pipes2 == 0 {
+        return None;
+    }
+    let rest_raw = &s[i..];
+    let rest = rest_raw_trimmed(rest_raw);
+    let skip = rest_raw.len() - rest.len();
+    for (kw, kind) in [
+        ("function_invoke", DsmlKind::Invoke),
+        ("invoke", DsmlKind::Invoke),
+        ("function_calls", DsmlKind::Calls),
+        ("calls", DsmlKind::Calls),
+        ("parameter", DsmlKind::Parameter),
+    ] {
+        if rest.starts_with(kw) {
+            return Some(DsmlHead {
+                close,
+                kind,
+                end: i + skip + kw.len(),
+            });
+        }
+    }
+    None
+}
+
+fn rest_raw_trimmed(s: &str) -> &str {
+    s.strip_prefix(|c: char| c.is_whitespace()).unwrap_or(s)
 }
 
 fn parse_body(body: &str) -> Option<Value> {
@@ -236,6 +387,11 @@ fn parse_body(body: &str) -> Option<Value> {
     serde_json::from_str::<Value>(s).ok().filter(|v| v.is_object())
 }
 
+enum ParamStyle {
+    Xml,
+    Dsml,
+}
+
 fn parse_params(s: &str) -> Option<Value> {
     let mut map = serde_json::Map::new();
     let mut rest = s;
@@ -248,11 +404,14 @@ fn parse_params(s: &str) -> Option<Value> {
         let Some(name) = attr_value(tag, "name") else { break };
         let string_true = attr_value(tag, "string").map(|v| v == "true").unwrap_or(false);
         rest = &rest[gt + 1..];
-        let end = param_markers(&style)
-            .iter()
-            .filter_map(|m| rest.find(m))
-            .min()
-            .unwrap_or(rest.len());
+        let end = match style {
+            ParamStyle::Xml => ["</param", "<param"]
+                .iter()
+                .filter_map(|m| rest.find(m))
+                .min()
+                .unwrap_or(rest.len()),
+            ParamStyle::Dsml => find_dsml_param_marker(rest).unwrap_or(rest.len()),
+        };
         let val = rest[..end].trim().to_string();
         rest = &rest[end..];
         let v = if string_true {
@@ -262,9 +421,12 @@ fn parse_params(s: &str) -> Option<Value> {
         };
         map.insert(name, v);
         found = true;
-        let at_close = param_markers(&style)
-            .iter()
-            .any(|m| m.starts_with("</") && rest.starts_with(m));
+        let at_close = match style {
+            ParamStyle::Xml => rest.starts_with("</param"),
+            ParamStyle::Dsml => dsml_head(rest)
+                .map(|h| h.close && h.kind == DsmlKind::Parameter)
+                .unwrap_or(false),
+        };
         if at_close {
             let c = rest.find('>').map(|i| i + 1).unwrap_or(rest.len());
             rest = &rest[c..];
@@ -277,37 +439,24 @@ fn parse_params(s: &str) -> Option<Value> {
     }
 }
 
-enum ParamStyle {
-    Xml,
-    Dsml,
-}
-
-const XML_PARAM_MARKERS: [&str; 2] = ["</param", "<param"];
-const DSML_PARAM_MARKERS: [&str; 4] = [
-    "</｜DSML｜parameter",
-    "<｜DSML｜parameter",
-    "</|DSML|parameter",
-    "<|DSML|parameter",
-];
-
 fn find_param_start(s: &str) -> Option<(usize, ParamStyle)> {
     let xml = s.find("<param").map(|i| (i, ParamStyle::Xml));
-    let dsml = DSML_PARAM_MARKERS[1..]
-        .iter()
-        .filter_map(|m| s.find(m))
-        .min()
-        .map(|i| (i, ParamStyle::Dsml));
+    let dsml = dsml_marks(s)
+        .into_iter()
+        .filter(|(_, h)| !h.close && h.kind == DsmlKind::Parameter)
+        .map(|(i, _)| (i, ParamStyle::Dsml))
+        .min_by_key(|(i, _)| *i);
     match (xml, dsml) {
         (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
         (a, b) => a.or(b),
     }
 }
 
-fn param_markers(style: &ParamStyle) -> &'static [&'static str] {
-    match style {
-        ParamStyle::Xml => &XML_PARAM_MARKERS,
-        ParamStyle::Dsml => &DSML_PARAM_MARKERS,
-    }
+fn find_dsml_param_marker(s: &str) -> Option<usize> {
+    dsml_marks(s)
+        .into_iter()
+        .find(|(_, h)| h.kind == DsmlKind::Parameter)
+        .map(|(i, _)| i)
 }
 
 fn attr_value(tag: &str, name: &str) -> Option<String> {
@@ -324,6 +473,12 @@ mod tests {
 
     fn text(s: &str) -> ParseEvent {
         ParseEvent::Text(s.to_string())
+    }
+
+    fn ignore_blank(ev: Vec<ParseEvent>) -> Vec<ParseEvent> {
+        ev.into_iter()
+            .filter(|e| !matches!(e, ParseEvent::Text(t) if t.trim().is_empty()))
+            .collect()
     }
 
     #[test]
@@ -400,7 +555,7 @@ mod tests {
 
     #[test]
     fn dsml_invoke_is_parsed() {
-        let src = "<｜DSML｜calls>\n<｜DSML｜invoke name=\"Bash\">\n<｜DSML｜parameter name=\"command\" string=\"true\">mkdir -p /a && ls -ld /a</｜DSML｜parameter>\n<｜DSML｜parameter name=\"description\" string=\"true\">Create dir</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜calls>";
+        let src = "<｜｜DSML｜｜calls>\n<｜｜DSML｜｜invoke name=\"Bash\">\n<｜｜DSML｜｜parameter name=\"command\" string=\"true\">mkdir -p /a && ls -ld /a</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name=\"description\" string=\"true\">Create dir</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜calls>";
         let mut p = XmlToolParser::new();
         let ev = ignore_blank(p.push(src));
         assert_eq!(
@@ -416,8 +571,22 @@ mod tests {
     }
 
     #[test]
-    fn dsml_stream_is_parsed_character_by_character() {
+    fn dsml_single_pipe_is_parsed() {
         let src = "<｜DSML｜calls><｜DSML｜invoke name=\"Read\"><｜DSML｜parameter name=\"file_path\" string=\"true\">/a.js</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜calls>";
+        let mut p = XmlToolParser::new();
+        let ev = ignore_blank(p.push(src));
+        assert_eq!(
+            ev,
+            vec![ParseEvent::ToolUse {
+                name: "Read".into(),
+                input: serde_json::json!({"file_path": "/a.js"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn dsml_stream_is_parsed_character_by_character() {
+        let src = "<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name=\"Read\"><｜｜DSML｜｜parameter name=\"file_path\" string=\"true\">/a.js</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜calls>";
         let mut p = XmlToolParser::new();
         let mut ev = Vec::new();
         for ch in src.chars() {
@@ -434,10 +603,20 @@ mod tests {
         );
     }
 
-    fn ignore_blank(ev: Vec<ParseEvent>) -> Vec<ParseEvent> {
-        ev.into_iter()
-            .filter(|e| !matches!(e, ParseEvent::Text(t) if t.trim().is_empty()))
-            .collect()
+    #[test]
+    fn dsml_with_space_before_keyword_is_parsed() {
+        let src = "<｜｜DSML｜｜calls>\n<｜｜DSML｜｜ invoke name=\"Bash\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">mkdir -p deepseek-test</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜calls>";
+        let mut p = XmlToolParser::new();
+        let ev = ignore_blank(p.push(src));
+        assert_eq!(
+            ev,
+            vec![ParseEvent::ToolUse {
+                name: "Bash".into(),
+                input: serde_json::json!({
+                    "command": "mkdir -p deepseek-test",
+                }),
+            }]
+        );
     }
 
     #[test]
