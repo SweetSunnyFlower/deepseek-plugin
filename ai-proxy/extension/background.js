@@ -17,6 +17,9 @@ async function detectProviders() {
 }
 
 function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
   ws = new WebSocket(PROXY_URL);
   ws.onopen = async () => {
     console.log("[bridge] 已连接代理");
@@ -91,4 +94,9 @@ chrome.cookies.onChanged.addListener(({ cookie, removed }) => {
   if (!cookie.domain.includes("chat.deepseek.com")) return;
   detectProviders().then(send);
 });
+// MV3 service worker 会被休眠：用 alarms 定期唤醒并确保 WebSocket 存活/重连
+chrome.alarms.create("bridge-watchdog", { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener(() => connect());
+chrome.runtime.onStartup.addListener(() => connect());
+chrome.runtime.onInstalled.addListener(() => connect());
 connect();

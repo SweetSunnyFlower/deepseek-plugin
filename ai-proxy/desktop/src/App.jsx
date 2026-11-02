@@ -93,7 +93,11 @@ export default function App() {
   }
 
   async function refreshProviders() {
-    await invoke("refresh_providers");
+    const sent = await invoke("refresh_providers");
+    if (!sent) {
+      notify("插件未连接：请确认扩展已启用，或重新加载扩展");
+      return;
+    }
     setTimeout(refresh, 500);
   }
 
