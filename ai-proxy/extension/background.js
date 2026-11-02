@@ -4,9 +4,24 @@
 const PROXY_URL = "ws://127.0.0.1:8787/bridge";
 let ws = null;
 
+const DEEPSEEK_COOKIE_KEYS = ["ds_session_id"];
+
+async function detectProviders() {
+  const cookies = await chrome.cookies.getAll({ domain: "chat.deepseek.com" });
+  const names = cookies.map((c) => c.name);
+  const loggedIn = DEEPSEEK_COOKIE_KEYS.some((k) => names.includes(k));
+  return {
+    type: "providers_status",
+    providers: [{ id: "deepseek", logged_in: loggedIn }],
+  };
+}
+
 function connect() {
   ws = new WebSocket(PROXY_URL);
-  ws.onopen = () => console.log("[bridge] 已连接代理");
+  ws.onopen = async () => {
+    console.log("[bridge] 已连接代理");
+    send(await detectProviders());
+  };
   ws.onclose = () => {
     ws = null;
     setTimeout(connect, 2000);
@@ -20,6 +35,7 @@ function connect() {
       return;
     }
     if (msg.type === "send_prompt") await forwardPrompt(msg);
+    if (msg.type === "refresh_providers") send(await detectProviders());
   };
 }
 
@@ -71,4 +87,8 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 setInterval(() => send({ type: "ping" }), 20000);
+chrome.cookies.onChanged.addListener(({ cookie, removed }) => {
+  if (!cookie.domain.includes("chat.deepseek.com")) return;
+  detectProviders().then(send);
+});
 connect();
