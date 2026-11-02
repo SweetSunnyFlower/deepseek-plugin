@@ -54,7 +54,7 @@ async function forwardPrompt(msg) {
   try {
     if (msg.newChat) await openUrl(tab.id, "https://chat.deepseek.com/");
     else if (msg.chatUrl && tab.url !== msg.chatUrl) await openUrl(tab.id, msg.chatUrl);
-    const res = await chrome.tabs.sendMessage(tab.id, msg);
+    const res = await sendToTab(tab.id, msg);
     if (!res?.ok) {
       send({ id: msg.id, type: "stream_error", error: res?.error || "标签页无响应，请刷新页面" });
     }
@@ -63,12 +63,24 @@ async function forwardPrompt(msg) {
   }
 }
 
-// 跳到首页（新建对话）或指定对话；等页面加载完成，content script 才能接收消息
-function openUrl(tabId, url) {
+// 扩展重载后旧页面的 content script 会失效（Receiving end does not exist）。
+// 自动重载标签页并重试一次，避免用户手动刷新。
+async function sendToTab(tabId, msg) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, msg);
+  } catch (e) {
+    const text = String(e?.message || e);
+    if (!text.includes("Receiving end does not exist")) throw e;
+    await reloadTab(tabId);
+    return chrome.tabs.sendMessage(tabId, msg);
+  }
+}
+
+function reloadTab(tabId) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       done();
-      reject(new Error("打开对话超时"));
+      reject(new Error("刷新标签页超时"));
     }, 20000);
     const listener = (id, info) => {
       if (id === tabId && info.status === "complete") {
@@ -81,7 +93,32 @@ function openUrl(tabId, url) {
       chrome.tabs.onUpdated.removeListener(listener);
     };
     chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.update(tabId, { url });
+    chrome.tabs.reload(tabId);
+  });
+}
+
+// 跳到首页（新建对话）或指定对话；等页面加载完成，content script 才能接收消息
+function openUrl(tabId, url) {
+  return chrome.tabs.get(tabId).then((tab) => {
+    if ((tab.url || "").split("#")[0] === url) return;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        done();
+        reject(new Error("打开对话超时"));
+      }, 20000);
+      const listener = (id, info) => {
+        if (id === tabId && info.status === "complete") {
+          done();
+          resolve();
+        }
+      };
+      const done = () => {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      chrome.tabs.update(tabId, { url });
+    });
   });
 }
 
