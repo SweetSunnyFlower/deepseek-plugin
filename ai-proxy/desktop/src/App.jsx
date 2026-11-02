@@ -258,8 +258,8 @@ function ProvidersView({ providers, settings, onChoose, onInterval, onToggle }) 
             key={p.id}
             className={
               p.active
-                ? "border-primary bg-primary/5 shadow-md"
-                : "transition-colors hover:border-primary/40"
+                ? "relative overflow-hidden border-primary/30 shadow-md before:absolute before:inset-y-5 before:left-0 before:w-[3px] before:rounded-full before:bg-primary"
+                : "transition-shadow hover:shadow-lg"
             }
           >
             <CardHeader className="flex-row items-center justify-between space-y-0">
