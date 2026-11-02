@@ -61,6 +61,21 @@ pub fn save(dir: &Path, settings: &AppSettings) -> io::Result<()> {
     fs::write(dir.join("settings.json"), text)
 }
 
+pub fn apply_selection(
+    settings: &mut AppSettings,
+    status: &std::collections::HashMap<String, bool>,
+    id: &str,
+) -> Result<(), String> {
+    if !settings.providers.contains_key(id) {
+        return Err("未知供应商".into());
+    }
+    if !status.get(id).copied().unwrap_or(false) {
+        return Err("该供应商未登录，无法选择".into());
+    }
+    settings.active_provider = id.to_string();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +99,30 @@ mod tests {
         assert_eq!(s.port, 8787);
         assert_eq!(s.providers["deepseek"].min_interval_ms, 5000);
         assert!(!s.token.is_empty());
+    }
+
+    #[test]
+    fn apply_selection_rejects_unknown() {
+        let mut s = AppSettings::default();
+        let status = std::collections::HashMap::new();
+        assert!(apply_selection(&mut s, &status, "chatgpt").is_err());
+    }
+
+    #[test]
+    fn apply_selection_rejects_not_logged_in() {
+        let mut s = AppSettings::default();
+        let mut status = std::collections::HashMap::new();
+        status.insert("deepseek".into(), false);
+        assert!(apply_selection(&mut s, &status, "deepseek").is_err());
+        assert_eq!(s.active_provider, "deepseek");
+    }
+
+    #[test]
+    fn apply_selection_sets_active_provider() {
+        let mut s = AppSettings::default();
+        let mut status = std::collections::HashMap::new();
+        status.insert("deepseek".into(), true);
+        apply_selection(&mut s, &status, "deepseek").unwrap();
+        assert_eq!(s.active_provider, "deepseek");
     }
 }

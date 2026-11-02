@@ -11,6 +11,41 @@ pub fn get_settings(state: State<'_, AppState>) -> AppSettings {
 }
 
 #[tauri::command]
+pub fn get_providers_status(state: State<'_, AppState>) -> Vec<Value> {
+    let s = state.settings.read().unwrap();
+    let status = state.provider_status.read().unwrap();
+    s.providers
+        .iter()
+        .map(|(id, p)| {
+            json!({
+                "id": id,
+                "logged_in": status.get(id).copied().unwrap_or(false),
+                "enabled": p.enabled,
+                "min_interval_ms": p.min_interval_ms,
+                "active": s.active_provider == *id,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn select_provider(state: State<'_, AppState>, id: String) -> Result<AppSettings, String> {
+    let status = state.provider_status.read().unwrap().clone();
+    let mut s = state.settings.write().unwrap();
+    crate::settings::apply_selection(&mut s, &status, &id)?;
+    let snapshot = s.clone();
+    drop(s);
+    save(&state.config_dir, &snapshot).map_err(|e| e.to_string())?;
+    state.log(format!("[选择] 当前供应商: {id}"));
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn refresh_providers(state: State<'_, AppState>) -> bool {
+    state.bridge.notify(json!({ "type": "refresh_providers" }))
+}
+
+#[tauri::command]
 pub fn update_provider(
     state: State<'_, AppState>,
     provider: String,
