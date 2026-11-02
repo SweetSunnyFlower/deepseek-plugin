@@ -254,7 +254,14 @@ function ProvidersView({ providers, settings, onChoose, onInterval, onToggle }) 
       {providers.map((p) => {
         const cfg = settings?.providers?.[p.id];
         return (
-          <Card key={p.id} className={p.active ? "ring-2 ring-primary" : ""}>
+          <Card
+            key={p.id}
+            className={
+              p.active
+                ? "border-primary bg-primary/5 shadow-md"
+                : "transition-colors hover:border-primary/40"
+            }
+          >
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <div className="flex items-center gap-2">
                 <CardTitle>{PROVIDER_NAMES[p.id] || p.id}</CardTitle>
