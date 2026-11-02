@@ -2,6 +2,7 @@ use crate::bridge::BridgeHub;
 use crate::logs::LogBuffer;
 use crate::provider::controller::ProviderController;
 use crate::provider::session::SessionStore;
+use crate::session_db::SessionDb;
 use crate::settings::{self, AppSettings};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ pub struct AppState {
     pub providers: Arc<BTreeMap<String, Arc<ProviderController>>>,
     pub sessions: Arc<std::sync::Mutex<SessionStore>>,
     pub provider_status: Arc<RwLock<HashMap<String, bool>>>,
+    pub session_db: Option<Arc<SessionDb>>,
     pub logs: Arc<LogBuffer>,
     pub config_dir: PathBuf,
 }
@@ -23,6 +25,14 @@ impl AppState {
         let loaded = settings::load(&config_dir);
         let _ = settings::save(&config_dir, &loaded);
         let settings = Arc::new(RwLock::new(loaded));
+        let logs = Arc::new(LogBuffer::new(500));
+        let session_db = match SessionDb::open(&config_dir.join("sessions.db")) {
+            Ok(db) => Some(Arc::new(db)),
+            Err(e) => {
+                logs.push(format!("[会话库] 打开失败，退回启发式匹配: {e}"));
+                None
+            }
+        };
         let providers = {
             let s = settings.read().unwrap();
             s.providers
@@ -41,7 +51,8 @@ impl AppState {
             providers: Arc::new(providers),
             sessions: Arc::new(std::sync::Mutex::new(SessionStore::new(20))),
             provider_status: Arc::new(RwLock::new(HashMap::new())),
-            logs: Arc::new(LogBuffer::new(500)),
+            session_db,
+            logs,
             config_dir,
         }
     }

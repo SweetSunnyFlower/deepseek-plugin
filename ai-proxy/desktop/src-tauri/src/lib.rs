@@ -7,6 +7,7 @@ pub mod logs;
 pub mod parser;
 pub mod provider;
 pub mod settings;
+pub mod session_db;
 pub mod state;
 pub mod types;
 
