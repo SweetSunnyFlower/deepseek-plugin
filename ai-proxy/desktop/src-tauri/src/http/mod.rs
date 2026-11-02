@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 pub mod anthropic;
 pub mod openai;
+pub mod session_id;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
