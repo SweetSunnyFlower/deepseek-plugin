@@ -50,6 +50,17 @@ v2 目标：
 
 ## 4. 总体架构
 
+### 4.1 仓库布局
+
+新代码全部放在 `ai-proxy/` 目录，分两个子目录：
+
+- `ai-proxy/desktop/`：Tauri 桌面应用（Rust 后端 + React 前端）。
+- `ai-proxy/extension/`：Chrome 插件（MV3）。
+
+现有根目录的 `proxy/`（Node 实现）与 `extension/`（v1 插件）保留至 v2 功能对等验收通过后再删除；设计文档与实现计划分别落在 `docs/superpowers/specs/` 与 `docs/superpowers/plans/`。
+
+### 4.2 总体架构
+
 ```text
 ┌──────────────┐  Anthropic/OpenAI   ┌────────────────────────────┐
 │ Claude Code   │ ─────────────────▶ │                            │
