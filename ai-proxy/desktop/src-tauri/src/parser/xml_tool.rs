@@ -54,7 +54,11 @@ impl XmlToolParser {
                 match find_body_end(&self.buf) {
                     Some(idx) => {
                         let tail = &self.buf[idx..];
-                        if tail.starts_with("</tool_call") && !tail.contains('>') && !final_ {
+                        let partial_close = (tail.starts_with("</tool_call")
+                            || tail.starts_with("</｜DSML｜invoke")
+                            || tail.starts_with("</|DSML|invoke"))
+                            && !tail.contains('>');
+                        if partial_close && !final_ {
                             self.call = Some(call);
                             return out;
                         }
@@ -103,6 +107,19 @@ impl XmlToolParser {
                         });
                         continue;
                     }
+                    if self.buf.starts_with("<｜DSML｜")
+                        || self.buf.starts_with("</｜DSML｜")
+                        || self.buf.starts_with("<|DSML|")
+                        || self.buf.starts_with("</|DSML|")
+                    {
+                        if self.buf.contains('>') {
+                            drop_to_gt(&mut self.buf);
+                            continue;
+                        }
+                        if !final_ {
+                            return out;
+                        }
+                    }
                     if !final_ && is_partial_marker(&self.buf) {
                         return out;
                     }
@@ -128,15 +145,27 @@ impl XmlToolParser {
     }
 }
 
+const XML_BODY_MARKERS: [&str; 3] = ["</tool_call", "<tool_call", "<tool_result"];
+const DSML_BODY_MARKERS: [&str; 4] = [
+    "</｜DSML｜invoke",
+    "<｜DSML｜invoke",
+    "</|DSML|invoke",
+    "<|DSML|invoke",
+];
+
 fn find_body_end(s: &str) -> Option<usize> {
-    ["</tool_call", "<tool_call", "<tool_result"]
+    XML_BODY_MARKERS
         .iter()
-        .filter_map(|m| s.find(m))
+        .chain(DSML_BODY_MARKERS.iter())
+        .filter_map(|m| s.find(*m))
         .min()
 }
 
 fn close_len(s: &str) -> usize {
-    if s.starts_with("</tool_call") {
+    let closes_dsml = DSML_BODY_MARKERS
+        .iter()
+        .any(|m| m.starts_with("</") && s.starts_with(m));
+    if s.starts_with("</tool_call") || closes_dsml {
         s.find('>').map(|i| i + 1).unwrap_or(s.len())
     } else {
         0
@@ -149,10 +178,22 @@ fn drop_to_gt(buf: &mut String) {
 }
 
 fn parse_start(s: &str) -> Option<(usize, String)> {
-    if !s.starts_with("<tool_call") {
-        return None;
+    if s.starts_with("<tool_call") {
+        return parse_named(s, "<tool_call".len());
     }
-    let rest = s["<tool_call".len()..].strip_prefix(|c: char| c.is_whitespace())?;
+    for prefix in ["<｜DSML｜", "<|DSML|"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            let rest = rest.strip_prefix("function_").unwrap_or(rest);
+            let after = rest.strip_prefix("invoke")?;
+            let head_len = s.len() - after.len();
+            return parse_named(s, head_len);
+        }
+    }
+    None
+}
+
+fn parse_named(s: &str, head_len: usize) -> Option<(usize, String)> {
+    let rest = s[head_len..].strip_prefix(|c: char| c.is_whitespace())?;
     let rest = rest.strip_prefix("name")?;
     let rest = rest.trim_start_matches(char::is_whitespace).strip_prefix('=')?;
     let rest = rest.trim_start_matches(char::is_whitespace).strip_prefix('"')?;
@@ -167,7 +208,15 @@ fn is_partial_marker(s: &str) -> bool {
     if s.len() > 60 || s.contains('>') {
         return false;
     }
-    ["<tool_call", "</tool_call", "<tool_result"]
+    [
+        "<tool_call",
+        "</tool_call",
+        "<tool_result",
+        "<｜DSML｜",
+        "</｜DSML｜",
+        "<|DSML|",
+        "</|DSML|",
+    ]
         .iter()
         .any(|m| m.starts_with(s) || s.starts_with(m))
 }
@@ -192,14 +241,14 @@ fn parse_params(s: &str) -> Option<Value> {
     let mut rest = s;
     let mut found = false;
     loop {
-        let Some(i) = rest.find("<param") else { break };
+        let Some((i, style)) = find_param_start(rest) else { break };
         rest = &rest[i..];
         let Some(gt) = rest.find('>') else { break };
         let tag = &rest[..gt + 1];
         let Some(name) = attr_value(tag, "name") else { break };
         let string_true = attr_value(tag, "string").map(|v| v == "true").unwrap_or(false);
         rest = &rest[gt + 1..];
-        let end = ["</param", "<param"]
+        let end = param_markers(&style)
             .iter()
             .filter_map(|m| rest.find(m))
             .min()
@@ -213,7 +262,10 @@ fn parse_params(s: &str) -> Option<Value> {
         };
         map.insert(name, v);
         found = true;
-        if rest.starts_with("</param") {
+        let at_close = param_markers(&style)
+            .iter()
+            .any(|m| m.starts_with("</") && rest.starts_with(m));
+        if at_close {
             let c = rest.find('>').map(|i| i + 1).unwrap_or(rest.len());
             rest = &rest[c..];
         }
@@ -222,6 +274,39 @@ fn parse_params(s: &str) -> Option<Value> {
         Some(Value::Object(map))
     } else {
         None
+    }
+}
+
+enum ParamStyle {
+    Xml,
+    Dsml,
+}
+
+const XML_PARAM_MARKERS: [&str; 2] = ["</param", "<param"];
+const DSML_PARAM_MARKERS: [&str; 4] = [
+    "</｜DSML｜parameter",
+    "<｜DSML｜parameter",
+    "</|DSML|parameter",
+    "<|DSML|parameter",
+];
+
+fn find_param_start(s: &str) -> Option<(usize, ParamStyle)> {
+    let xml = s.find("<param").map(|i| (i, ParamStyle::Xml));
+    let dsml = DSML_PARAM_MARKERS[1..]
+        .iter()
+        .filter_map(|m| s.find(m))
+        .min()
+        .map(|i| (i, ParamStyle::Dsml));
+    match (xml, dsml) {
+        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+        (a, b) => a.or(b),
+    }
+}
+
+fn param_markers(style: &ParamStyle) -> &'static [&'static str] {
+    match style {
+        ParamStyle::Xml => &XML_PARAM_MARKERS,
+        ParamStyle::Dsml => &DSML_PARAM_MARKERS,
     }
 }
 
@@ -314,19 +399,45 @@ mod tests {
     }
 
     #[test]
-    fn dsml_is_plain_text() {
-        let src = "<｜DSML｜invoke name=\"Read\">x</｜DSML｜invoke>";
+    fn dsml_invoke_is_parsed() {
+        let src = "<｜DSML｜calls>\n<｜DSML｜invoke name=\"Bash\">\n<｜DSML｜parameter name=\"command\" string=\"true\">mkdir -p /a && ls -ld /a</｜DSML｜parameter>\n<｜DSML｜parameter name=\"description\" string=\"true\">Create dir</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜calls>";
         let mut p = XmlToolParser::new();
-        let mut ev = p.push(src);
+        let ev = ignore_blank(p.push(src));
+        assert_eq!(
+            ev,
+            vec![ParseEvent::ToolUse {
+                name: "Bash".into(),
+                input: serde_json::json!({
+                    "command": "mkdir -p /a && ls -ld /a",
+                    "description": "Create dir",
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn dsml_stream_is_parsed_character_by_character() {
+        let src = "<｜DSML｜calls><｜DSML｜invoke name=\"Read\"><｜DSML｜parameter name=\"file_path\" string=\"true\">/a.js</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜calls>";
+        let mut p = XmlToolParser::new();
+        let mut ev = Vec::new();
+        for ch in src.chars() {
+            ev.extend(p.push(&ch.to_string()));
+        }
         ev.extend(p.finish());
-        let joined: String = ev
-            .iter()
-            .map(|e| match e {
-                ParseEvent::Text(t) => t.clone(),
-                _ => panic!("DSML 不应被解析为工具调用"),
-            })
-            .collect();
-        assert_eq!(joined, src);
+        let ev = ignore_blank(ev);
+        assert_eq!(
+            ev,
+            vec![ParseEvent::ToolUse {
+                name: "Read".into(),
+                input: serde_json::json!({"file_path": "/a.js"}),
+            }]
+        );
+    }
+
+    fn ignore_blank(ev: Vec<ParseEvent>) -> Vec<ParseEvent> {
+        ev.into_iter()
+            .filter(|e| !matches!(e, ParseEvent::Text(t) if t.trim().is_empty()))
+            .collect()
     }
 
     #[test]

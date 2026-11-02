@@ -49,6 +49,7 @@ pub fn tools_prompt(tools: &[ToolSpec]) -> String {
 - 一次回复可在多个 <tool_call> 里放互不依赖的调用。调用完立即停止，等待结果。\n\
 - 工具结果会在下一条 user 消息里以 <tool_result>...</tool_result> 给出，不要自己编写。\n\
 - Edit 的 old_string 必须和文件原文逐字一致。\n\
+- 禁止使用 DSML（<｜DSML｜>）标记，工具调用只允许使用上述 <tool_call> 语法。\n\
 - 不需要工具时直接文字回答。\n\n\
 {}\n</tools>",
         list
@@ -97,7 +98,8 @@ mod tests {
         assert!(p.contains("<tool_call name=\"工具名\">"));
         assert!(p.contains("<user>\n看下 a.js\n</user>"));
         assert!(p.contains("请以 assistant 的身份回复最后一条 user 消息"));
-        assert!(!p.contains("DSML"));
+        assert!(!p.contains("<｜DSML｜invoke"));
+        assert!(p.contains("禁止使用 DSML"));
     }
 
     #[test]

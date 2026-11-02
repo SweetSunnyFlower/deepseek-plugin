@@ -39,6 +39,25 @@ async fn ws_echo(addr: String, payloads: Vec<String>) {
     .unwrap();
 }
 
+async fn wait_bridge(addr: &str) {
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        let v: serde_json::Value = client
+            .get(format!("http://{addr}/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if v["bridge"] == true {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("bridge 未在预期时间内连接");
+}
+
 #[tokio::test]
 async fn text_reply_round_trip() {
     let (addr, token) = start_server().await;
@@ -50,6 +69,7 @@ async fn text_reply_round_trip() {
             "data: {\\\"p\\\":\\\"response/status\\\",\\\"o\\\":\\\"SET\\\",\\\"v\\\":\\\"FINISHED\\\"}\\n\\n".into(),
         ],
     ));
+    wait_bridge(&addr).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/messages"))
         .header("x-api-key", &token)
@@ -80,6 +100,7 @@ async fn tool_call_reply_round_trip() {
             "data: {\\\"p\\\":\\\"response/status\\\",\\\"o\\\":\\\"SET\\\",\\\"v\\\":\\\"FINISHED\\\"}\\n\\n".into(),
         ],
     ));
+    wait_bridge(&addr).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/messages"))
         .header("x-api-key", &token)
