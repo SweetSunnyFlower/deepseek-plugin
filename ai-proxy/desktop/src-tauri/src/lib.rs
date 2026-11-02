@@ -1,3 +1,4 @@
+pub mod logs;
 pub mod parser;
 pub mod provider;
 pub mod settings;
