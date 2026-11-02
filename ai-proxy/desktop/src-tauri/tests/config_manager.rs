@@ -19,7 +19,7 @@ fn claude_takeover_backs_up_and_preserves_other_keys() {
         r#"{"theme":"dark","env":{"FOO":"bar"}}"#,
     )
     .unwrap();
-    let backup = claude::takeover(home, "http://127.0.0.1:8787", "tok").unwrap();
+    let backup = claude::takeover(home, "http://127.0.0.1:8787", "tok").unwrap().unwrap();
     assert!(backup.exists());
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
@@ -37,8 +37,8 @@ fn claude_takeover_is_idempotent() {
     let home = dir.path();
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
-    claude::takeover(home, "http://127.0.0.1:8787", "tok1").unwrap();
-    claude::takeover(home, "http://127.0.0.1:8787", "tok2").unwrap();
+    claude::takeover(home, "http://127.0.0.1:8787", "tok1").unwrap().unwrap();
+    assert!(claude::takeover(home, "http://127.0.0.1:8787", "tok2").unwrap().is_none());
     assert_eq!(bak_files(&home.join(".claude"), "settings.json.bak-"), 1);
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
@@ -54,7 +54,7 @@ fn claude_restore_returns_original() {
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     let original = r#"{"theme":"dark"}"#;
     std::fs::write(home.join(".claude/settings.json"), original).unwrap();
-    let backup = claude::takeover(home, "http://127.0.0.1:8787", "tok").unwrap();
+    let backup = claude::takeover(home, "http://127.0.0.1:8787", "tok").unwrap().unwrap();
     claude::restore(home, &backup).unwrap();
     assert_eq!(
         std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(),
@@ -86,7 +86,7 @@ fn codex_takeover_sets_provider_and_backs_up() {
         "model = \"o3\"\napproval_policy = \"on-request\"\n",
     )
     .unwrap();
-    let backup = codex::takeover(home, "http://127.0.0.1:8787/v1", "tok").unwrap();
+    let backup = codex::takeover(home, "http://127.0.0.1:8787/v1", "tok").unwrap().unwrap();
     assert!(backup.exists());
     let text = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert!(text.contains("[model_providers.bridge]"));
@@ -103,7 +103,7 @@ fn codex_restore_returns_original() {
     std::fs::create_dir_all(home.join(".codex")).unwrap();
     let original = "model = \"o3\"\n";
     std::fs::write(home.join(".codex/config.toml"), original).unwrap();
-    let backup = codex::takeover(home, "http://127.0.0.1:8787/v1", "tok").unwrap();
+    let backup = codex::takeover(home, "http://127.0.0.1:8787/v1", "tok").unwrap().unwrap();
     codex::restore(home, &backup).unwrap();
     assert_eq!(
         std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),

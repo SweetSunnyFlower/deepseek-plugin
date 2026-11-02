@@ -19,12 +19,17 @@ pub mod openai;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/status", get(status))
+        .route("/logs", get(logs))
         .route("/bridge", get(ws_handler))
         .route("/test", post(test_prompt))
         .route("/v1/messages", post(anthropic::handle))
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
         .route("/v1/chat/completions", post(openai::handle))
         .with_state(state)
+}
+
+async fn logs(State(state): State<AppState>) -> Json<Vec<String>> {
+    Json(state.logs.snapshot())
 }
 
 async fn status(State(state): State<AppState>) -> Json<Value> {

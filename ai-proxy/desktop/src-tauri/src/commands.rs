@@ -71,10 +71,14 @@ pub fn takeover_tool(state: State<'_, AppState>, tool: String) -> Result<String,
     let s = state.settings.read().unwrap().clone();
     let base = format!("http://127.0.0.1:{}", s.port);
     let home = home_dir()?;
-    let backup = match tool.as_str() {
+    let backup: Option<std::path::PathBuf> = match tool.as_str() {
         "claude" => claude::takeover(&home, &base, &s.token)?,
         "codex" => codex::takeover(&home, &format!("{base}/v1"), &s.token)?,
         _ => return Err("暂不支持该工具".into()),
+    };
+    let Some(backup) = backup else {
+        state.log(format!("[接管] {tool} 已接管，仅更新 token"));
+        return Ok("已接管（未新建备份）".into());
     };
     let mut settings = state.settings.write().unwrap();
     settings.managed_tools.push(ManagedTool {
@@ -118,12 +122,19 @@ pub fn restore_tool(state: State<'_, AppState>, tool: String) -> Result<(), Stri
 #[tauri::command]
 pub fn get_manual_config(state: State<'_, AppState>) -> Value {
     let s = state.settings.read().unwrap();
+    let base = format!("http://127.0.0.1:{}", s.port);
+    let openai = format!("{base}/v1");
+    let token = s.token.as_str();
     json!({
-        "base_url": format!("http://127.0.0.1:{}", s.port),
-        "openai_base_url": format!("http://127.0.0.1:{}/v1", s.port),
-        "token": s.token,
-        "claude_code": "设置 ANTHROPIC_BASE_URL 为代理地址、ANTHROPIC_AUTH_TOKEN 为 token",
-        "codex": "provider 的 base_url 指向 openai_base_url，API key 填 token",
+        "base_url": base,
+        "openai_base_url": openai,
+        "token": token,
+        "claude_cmd": format!(
+            "ANTHROPIC_BASE_URL=\"{base}\" ANTHROPIC_AUTH_TOKEN=\"{token}\" claude"
+        ),
+        "codex_cmd": format!(
+            "grep -qs '[model_providers.bridge]' ~/.codex/config.toml || printf '\\n[model_providers.bridge]\\nname = \"bridge\"\\nbase_url = \"{openai}\"\\nenv_key = \"DEEPSEEK_BRIDGE_TOKEN\"\\nmodel = \"bridge\"\\n' >> ~/.codex/config.toml; DEEPSEEK_BRIDGE_TOKEN=\"{token}\" codex"
+        ),
     })
 }
 

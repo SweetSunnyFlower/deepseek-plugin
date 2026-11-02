@@ -6,7 +6,7 @@ pub fn config_path(home: &Path) -> PathBuf {
     home.join(".codex/config.toml")
 }
 
-pub fn takeover(home: &Path, base_url: &str, _token: &str) -> Result<PathBuf, String> {
+pub fn takeover(home: &Path, base_url: &str, _token: &str) -> Result<Option<PathBuf>, String> {
     let path = config_path(home);
     let text = if path.exists() {
         fs::read_to_string(&path).map_err(|e| e.to_string())?
@@ -25,7 +25,7 @@ pub fn takeover(home: &Path, base_url: &str, _token: &str) -> Result<PathBuf, St
     let saved = if already {
         None
     } else {
-        Some(backup(&path).map_err(|e| e.to_string())?)
+        Some(Some(backup(&path).map_err(|e| e.to_string())?))
     };
     let root = doc.as_table_mut();
     if !root.contains_key("model_providers") {
@@ -44,7 +44,7 @@ pub fn takeover(home: &Path, base_url: &str, _token: &str) -> Result<PathBuf, St
     providers.insert("bridge", toml_edit::Item::Table(table));
     root.insert("model", toml_edit::value("bridge"));
     fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
-    Ok(saved.unwrap_or(path))
+    Ok(saved.unwrap_or(None))
 }
 
 pub fn restore(home: &Path, backup: &Path) -> Result<(), String> {

@@ -77,10 +77,11 @@ pub async fn handle(
         ),
     };
     state.log(format!(
-        "[请求] {} 条消息, {} 个工具, {}",
+        "[请求] {} 条消息, {} 个工具, {}, stream={}",
         messages.len(),
         tools.len(),
-        if found_info.is_some() { "续接对话" } else { "新对话" }
+        if found_info.is_some() { "续接对话" } else { "新对话" },
+        stream
     ));
 
     let (new_chat, chat_url) = match &found_info {
@@ -123,9 +124,26 @@ pub async fn handle(
                 }
             }
         });
-        let (out, final_url, err, empty_ok) =
+        let (mut out, final_url, err, empty_ok) =
             run_stream(rx, Some(sse_tx)).await;
         ping.abort();
+        if let Some(e) = err.as_ref() {
+            out.text(&format!("\n[代理错误] {e}"));
+            state.log(format!("[错误] {e}"));
+        }
+        save_session(&state, found_info, key, n, final_url, empty_ok && err.is_none());
+        state.log(format!(
+            "[回复流] {}",
+            out.content
+                .iter()
+                .map(|b| match b {
+                    Block::ToolUse { name, .. } => format!("工具:{name}"),
+                    Block::Text { text } => format!("文字{}", text.len()),
+                    _ => "其他".into(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
         let usage = json!({ "output_tokens": out.text_len / 3 });
         let _ = tx.send(Ok(format!(
             "event: message_delta\ndata: {}\n\n",
@@ -253,7 +271,9 @@ pub(crate) async fn run_stream(
 ) -> (Output, Option<String>, Option<String>, bool) {
     let sse: Option<Arc<dyn Fn(&str, Value) + Send + Sync>> = sse_tx.map(|tx| {
         Arc::new(move |event: &str, data: Value| {
-            let _ = tx.send(Ok(format!("event: {event}\ndata: {data}\n\n")));
+            let mut obj = data.as_object().cloned().unwrap_or_default();
+            obj.insert("type".into(), Value::String(event.to_string()));
+            let _ = tx.send(Ok(format!("event: {event}\ndata: {}\n\n", Value::Object(obj))));
         }) as Arc<dyn Fn(&str, Value) + Send + Sync>
     });
     let mut out = Output::new(sse);
@@ -425,10 +445,6 @@ fn stream_error(e: &str, stream: bool) -> Response {
             .into_response();
     }
     let (tx, rx) = mpsc::unbounded_channel::<Result<String, std::convert::Infallible>>();
-    let headers = [
-        (header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8")),
-        (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-    ];
     let body_text = format!("\n[代理错误] {e}");
     let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let _ = tx.send(Ok(format!(

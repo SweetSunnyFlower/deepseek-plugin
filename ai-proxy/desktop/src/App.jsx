@@ -208,11 +208,21 @@ export default function App() {
           ))}
           <div className="card">
             <h3>手动配置</h3>
-            <p>Claude Code：{manual.claude_code}</p>
-            <p>Codex：{manual.codex}</p>
-            <p>OpenAI 地址：{manual.openai_base_url}</p>
-            <button onClick={() => copy(manual.base_url)}>复制代理地址</button>
-            <button onClick={() => copy(manual.token)}>复制 Token</button>
+            <p className="hint">复制命令到终端执行即可，或用上方的一键接管。</p>
+            {[
+              ["Claude Code", manual.claude_cmd],
+              ["Codex", manual.codex_cmd],
+            ].map(([name, cmd]) => (
+              <div className="cmd" key={name}>
+                <strong>{name}</strong>
+                <code className="cmdbox">{cmd}</code>
+                <button onClick={() => copy(cmd)}>复制命令</button>
+              </div>
+            ))}
+            <p>
+              OpenAI 地址：{manual.openai_base_url}{" "}
+              <button onClick={() => copy(manual.openai_base_url)}>复制</button>
+            </p>
           </div>
           <div className="card">
             <h3>Codex 环境变量</h3>
