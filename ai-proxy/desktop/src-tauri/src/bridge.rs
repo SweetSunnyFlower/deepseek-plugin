@@ -47,6 +47,15 @@ impl BridgeHub {
         self.pending.lock().unwrap().len()
     }
 
+    pub fn notify(&self, msg: Value) -> bool {
+        self.sink
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|tx| tx.send(msg.to_string()).is_ok())
+            .unwrap_or(false)
+    }
+
     pub fn ask(
         &self,
         prompt: &str,

@@ -76,6 +76,9 @@ async fn ws_loop(socket: WebSocket, state: AppState) {
     while let Some(Ok(msg)) = stream.next().await {
         if let Message::Text(text) = msg {
             if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                if v.get("type").and_then(|x| x.as_str()) == Some("providers_status") {
+                    state.update_provider_status(&v);
+                }
                 state.bridge.handle_client(v);
             }
         }
