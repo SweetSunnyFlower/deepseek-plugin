@@ -21,6 +21,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/status", get(status))
         .route("/logs", get(logs))
+        .route("/sessions", get(sessions))
         .route("/bridge", get(ws_handler))
         .route("/test", post(test_prompt))
         .route("/v1/messages", post(anthropic::handle))
@@ -31,6 +32,30 @@ pub fn router(state: AppState) -> Router {
 
 async fn logs(State(state): State<AppState>) -> Json<Vec<String>> {
     Json(state.logs.snapshot())
+}
+
+async fn sessions(State(state): State<AppState>) -> Json<Value> {
+    let provider = {
+        let s = state.settings.read().unwrap();
+        s.active_provider.clone()
+    };
+    match state.session_db.as_ref() {
+        Some(db) => match db.list_segments(if provider.is_empty() { None } else { Some(&provider) }) {
+            Ok(list) => Json(json!(list
+                .into_iter()
+                .map(|s| json!({
+                    "cli_session_id": s.cli_session_id,
+                    "provider": s.provider,
+                    "web_chat_id": s.web_chat_id,
+                    "web_url": s.web_url,
+                    "synced_count": s.synced_count,
+                    "retryable": s.retryable,
+                }))
+                .collect::<Vec<_>>())),
+            Err(e) => Json(json!({ "error": e })),
+        },
+        None => Json(json!({ "error": "会话库不可用" })),
+    }
 }
 
 async fn status(State(state): State<AppState>) -> Json<Value> {

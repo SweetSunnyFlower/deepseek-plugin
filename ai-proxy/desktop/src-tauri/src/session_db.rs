@@ -122,6 +122,36 @@ impl SessionDb {
         .optional()
         .map_err(|e| e.to_string())
     }
+
+    pub fn list_segments(&self, provider: Option<&str>) -> Result<Vec<Segment>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT cli_session_id, provider, web_chat_id, web_url, synced_count, retryable
+                 FROM session_segments
+                 WHERE (?1 IS NULL OR provider = ?1)
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT 200",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![provider], |row| {
+                Ok(Segment {
+                    cli_session_id: row.get(0)?,
+                    provider: row.get(1)?,
+                    web_chat_id: row.get(2)?,
+                    web_url: row.get(3)?,
+                    synced_count: row.get::<_, i64>(4)? as usize,
+                    retryable: row.get::<_, i64>(5)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +215,28 @@ mod tests {
         .unwrap();
         assert!(db.latest_segment("cli-1", "chatgpt").unwrap().is_none());
         assert!(db.latest_segment("cli-2", "deepseek").unwrap().is_none());
+    }
+
+    #[test]
+    fn lists_segments_filtered_by_provider() {
+        let db = SessionDb::open_in_memory().unwrap();
+        db.upsert_segment(&Segment::new(
+            "cli-1",
+            "deepseek",
+            "chat-a",
+            "https://chat.deepseek.com/a/chat/s/chat-a",
+            2,
+        ))
+        .unwrap();
+        db.upsert_segment(&Segment::new(
+            "cli-1",
+            "chatgpt",
+            "chat-b",
+            "https://chatgpt.com/c/chat-b",
+            3,
+        ))
+        .unwrap();
+        assert_eq!(db.list_segments(None).unwrap().len(), 2);
+        assert_eq!(db.list_segments(Some("deepseek")).unwrap().len(), 1);
     }
 }
