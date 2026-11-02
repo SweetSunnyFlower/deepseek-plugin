@@ -28,9 +28,16 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn status(State(state): State<AppState>) -> Json<Value> {
+    let s = state.settings.read().unwrap();
     Json(json!({
         "bridge": state.bridge.connected(),
         "pending": state.bridge.pending_count(),
+        "provider": s.active_provider,
+        "interval_ms": s
+            .providers
+            .get(&s.active_provider)
+            .map(|p| p.min_interval_ms)
+            .unwrap_or(5000),
     }))
 }
 

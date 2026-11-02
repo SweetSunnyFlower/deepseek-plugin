@@ -2,14 +2,15 @@ use ai_proxy_desktop_lib::{http, state::AppState};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-async fn start_server() -> String {
+async fn start_server() -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(dir.path().to_path_buf());
+    let token = state.settings.read().unwrap().token.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let app = http::router(state);
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    addr
+    (addr, token)
 }
 
 async fn ws_echo(addr: String, payloads: Vec<String>) {
@@ -40,7 +41,7 @@ async fn ws_echo(addr: String, payloads: Vec<String>) {
 
 #[tokio::test]
 async fn text_reply_round_trip() {
-    let addr = start_server().await;
+    let (addr, token) = start_server().await;
     tokio::spawn(ws_echo(
         addr.clone(),
         vec![
@@ -51,6 +52,7 @@ async fn text_reply_round_trip() {
     ));
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/messages"))
+        .header("x-api-key", &token)
         .json(&serde_json::json!({
             "model": "deepseek-web",
             "max_tokens": 1024,
@@ -68,7 +70,7 @@ async fn text_reply_round_trip() {
 
 #[tokio::test]
 async fn tool_call_reply_round_trip() {
-    let addr = start_server().await;
+    let (addr, token) = start_server().await;
     tokio::spawn(ws_echo(
         addr.clone(),
         vec![
@@ -80,6 +82,7 @@ async fn tool_call_reply_round_trip() {
     ));
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/messages"))
+        .header("x-api-key", &token)
         .json(&serde_json::json!({
             "model": "deepseek-web",
             "max_tokens": 1024,

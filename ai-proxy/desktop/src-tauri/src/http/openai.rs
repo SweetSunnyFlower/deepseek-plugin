@@ -8,7 +8,7 @@ use crate::state::AppState;
 use crate::types::{Block, Message, ToolSpec};
 use axum::{
     extract::State,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -16,7 +16,18 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-pub async fn handle(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn handle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if !crate::auth::authorized(&headers, &state.settings.read().unwrap()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": { "message": "token 无效", "type": "authentication_error" } })),
+        )
+            .into_response();
+    }
     let stream = body.get("stream").and_then(|x| x.as_bool()).unwrap_or(false);
     let (system, messages, tools) = to_internal(&body);
     let model = body

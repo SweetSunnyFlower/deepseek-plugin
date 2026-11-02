@@ -7,7 +7,7 @@ use crate::state::AppState;
 use crate::types::{Block, Message, ToolSpec};
 use axum::{
     extract::State,
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -16,7 +16,14 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-pub async fn count_tokens(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn count_tokens(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if !crate::auth::authorized(&headers, &state.settings.read().unwrap()) {
+        return unauthorized();
+    }
     let system = system_text(&body);
     let messages = parse_messages(&body);
     let tools = parse_tools(&body);
@@ -29,7 +36,14 @@ pub async fn count_tokens(State(state): State<AppState>, Json(body): Json<Value>
     Json(json!({ "input_tokens": (prompt.len() as f64 / 3.0).ceil() as u64 })).into_response()
 }
 
-pub async fn handle(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn handle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if !crate::auth::authorized(&headers, &state.settings.read().unwrap()) {
+        return unauthorized();
+    }
     let stream = body.get("stream").and_then(|x| x.as_bool()).unwrap_or(false);
     let system = system_text(&body);
     let messages = parse_messages(&body);
@@ -130,6 +144,17 @@ pub async fn handle(State(state): State<AppState>, Json(body): Json<Value>) -> R
     };
 
     finish_non_stream(state, body, found_info, key, n, final_url, err, empty_ok, out, model, msg_id).await
+}
+
+fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "type": "error",
+            "error": { "type": "authentication_error", "message": "token 无效" }
+        })),
+    )
+        .into_response()
 }
 
 pub(crate) struct Output {

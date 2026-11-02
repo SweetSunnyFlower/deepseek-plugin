@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod bridge;
 pub mod http;
 pub mod logs;
