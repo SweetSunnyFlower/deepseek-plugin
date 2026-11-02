@@ -151,7 +151,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
-      <aside className="flex w-52 flex-col border-r p-4">
+      <aside className="flex w-52 flex-col bg-muted/20 p-4">
         <div className="flex items-center gap-2 px-2 pb-6">
           <img src={logoUrl} alt="AI Proxy" className="h-8 w-8 rounded-md" />
           <span className="font-semibold">AI Proxy</span>
@@ -176,7 +176,7 @@ export default function App() {
       </aside>
 
       <main className="flex flex-1 flex-col">
-        <header className="flex items-center justify-between border-b px-6 py-3">
+        <header className="flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-3">
             <span
               className={
@@ -188,9 +188,9 @@ export default function App() {
               {status.bridge ? "插件已连接" : "等待插件连接"}
             </span>
             {status.provider ? (
-              <Badge variant="outline">{activeName}</Badge>
+              <Badge variant="secondary">{activeName}</Badge>
             ) : (
-              <Badge variant="outline">未选择供应商</Badge>
+              <Badge variant="secondary">未选择供应商</Badge>
             )}
           </div>
           <Button variant="ghost" size="sm" onClick={refreshProviders}>
@@ -234,7 +234,7 @@ function ProvidersView({ providers, settings, onChoose, onInterval, onToggle }) 
   if (providers.length === 0) {
     return (
       <div className="mx-auto max-w-md pt-16">
-        <Card>
+        <Card className="bg-muted/50">
           <CardHeader>
             <CardTitle>没有检测到已登录的供应商</CardTitle>
           </CardHeader>
@@ -258,8 +258,8 @@ function ProvidersView({ providers, settings, onChoose, onInterval, onToggle }) 
             key={p.id}
             className={
               p.active
-                ? "bg-muted/40 shadow-md"
-                : "transition-shadow hover:shadow-lg"
+                ? "bg-muted"
+                : "bg-muted/40 transition-colors hover:bg-muted/70"
             }
           >
             <CardHeader className="flex-row items-center justify-between space-y-0">
@@ -330,7 +330,7 @@ function AppsView({
     <div className="grid max-w-3xl gap-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">应用</h2>
-        <Button variant="outline" size="sm" onClick={onScan}>
+        <Button variant="secondary" size="sm" onClick={onScan}>
           <RefreshCw size={14} className="mr-1" />
           重新检测
         </Button>
@@ -339,7 +339,7 @@ function AppsView({
         const found = tools.find((t) => t.tool === tool);
         const isManaged = managed(tool);
         return (
-          <Card key={tool}>
+              <Card key={tool} className="bg-muted/50">
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <div className="flex items-center gap-2">
                 <CardTitle>{name}</CardTitle>
@@ -353,7 +353,7 @@ function AppsView({
               {cmds[tool] && (
                 <div className="flex items-center gap-2">
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     size="sm"
                     onClick={() => onCopy(cmds[tool])}
                   >
@@ -412,7 +412,7 @@ function LogsView({ logs }) {
   return (
     <div className="max-w-3xl">
       <h2 className="mb-3 text-lg font-semibold">日志</h2>
-      <pre className="h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-4 text-xs">
+      <pre className="h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-4 text-xs">
         {logs.join("\n") || "暂无日志"}
       </pre>
     </div>
@@ -423,7 +423,7 @@ function ManualView({ manual, onCopy }) {
   return (
     <div className="grid max-w-3xl gap-4">
       <h2 className="text-lg font-semibold">手动配置</h2>
-      <Card>
+      <Card className="bg-muted/50">
         <CardContent className="space-y-3 text-sm">
           <p>
             代理地址：<code className="rounded bg-muted px-1">{manual.base_url}</code>
@@ -449,7 +449,7 @@ function ManualView({ manual, onCopy }) {
                 <code className="flex-1 whitespace-pre-wrap break-all rounded bg-muted px-2 py-1 text-xs">
                   {cmd}
                 </code>
-                <Button variant="outline" size="sm" onClick={() => onCopy(cmd)}>
+                <Button variant="secondary" size="sm" onClick={() => onCopy(cmd)}>
                   <Copy size={12} className="mr-1" />
                   复制命令
                 </Button>
