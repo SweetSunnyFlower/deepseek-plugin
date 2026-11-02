@@ -258,7 +258,7 @@ function ProvidersView({ providers, settings, onChoose, onInterval, onToggle }) 
             key={p.id}
             className={
               p.active
-                ? "relative overflow-hidden border-primary/30 shadow-md before:absolute before:inset-y-5 before:left-0 before:w-[3px] before:rounded-full before:bg-primary"
+                ? "bg-muted/40 shadow-md"
                 : "transition-shadow hover:shadow-lg"
             }
           >
@@ -266,7 +266,7 @@ function ProvidersView({ providers, settings, onChoose, onInterval, onToggle }) 
               <div className="flex items-center gap-2">
                 <CardTitle>{PROVIDER_NAMES[p.id] || p.id}</CardTitle>
                 {p.active && (
-                  <Badge variant="secondary">
+                  <Badge className="bg-primary text-primary-foreground">
                     <Check size={12} className="mr-1" />
                     当前使用
                   </Badge>
