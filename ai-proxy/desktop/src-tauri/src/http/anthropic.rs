@@ -63,31 +63,83 @@ pub async fn handle(
         .find(|m| m.role == "user")
         .map(|m| content_text(&m.content))
         .unwrap_or_default();
-    let key = SessionStore::key(&system, &first_user);
     let n = messages.len();
-    let found = {
-        let store = state.sessions.lock().unwrap();
-        store.find(&key, n, &messages)
+    let provider = {
+        let s = state.settings.read().unwrap();
+        s.active_provider.clone()
     };
-    let (prompt, found_info) = match &found {
-        Some((idx, url, rest)) => (build_follow_up(rest), Some((*idx, url.clone()))),
-        None => (
-            build_prompt(if system.is_empty() { None } else { Some(&system) }, &tools, &messages),
-            None,
-        ),
+    let full_prompt = || {
+        build_prompt(
+            if system.is_empty() { None } else { Some(&system) },
+            &tools,
+            &messages,
+        )
     };
+    let cli_id = crate::http::session_id::cli_session_id(&headers, &body);
+    let (prompt, new_chat, chat_url, mode_label, save_target) =
+        if let (Some(cli), Some(db)) = (cli_id.as_deref(), state.session_db.as_ref()) {
+            let segment = match db.latest_segment(cli, &provider) {
+                Ok(s) => s,
+                Err(e) => {
+                    state.log(format!("[映射] 查询失败: {e}"));
+                    None
+                }
+            };
+            let mode = decide_mode(segment.as_ref(), n);
+            let started_chat = segment.as_ref().map(|s| s.web_chat_id.clone());
+            let (prompt, new_chat, chat_url) = match mode {
+                SessionMode::New => (full_prompt(), true, None),
+                SessionMode::Continue => {
+                    let s = segment.as_ref().unwrap();
+                    (build_follow_up(&messages[s.synced_count..]), false, Some(s.web_url.clone()))
+                }
+                SessionMode::ForceContinue => {
+                    let s = segment.as_ref().unwrap();
+                    (full_prompt(), false, Some(s.web_url.clone()))
+                }
+                SessionMode::Retry => {
+                    let s = segment.as_ref().unwrap();
+                    let last = messages.last().cloned().unwrap_or(Message {
+                        role: "user".into(),
+                        content: Vec::new(),
+                    });
+                    (build_follow_up(std::slice::from_ref(&last)), false, Some(s.web_url.clone()))
+                }
+            };
+            let target = SaveTarget::Exact {
+                cli_id: cli.to_string(),
+                provider: provider.clone(),
+                started_chat: if mode == SessionMode::New { None } else { started_chat },
+            };
+            (prompt, new_chat, chat_url, mode.label(), target)
+        } else {
+            let key = SessionStore::key(&system, &first_user);
+            let found = {
+                let store = state.sessions.lock().unwrap();
+                store.find(&key, n, &messages)
+            };
+            let prompt = match &found {
+                Some((_, _, rest)) => build_follow_up(rest),
+                None => full_prompt(),
+            };
+            let (new_chat, chat_url, label) = match &found {
+                Some((_, url, _)) => (false, url.clone(), "续接对话"),
+                None => (true, None, "新对话"),
+            };
+            let found_info = found.map(|(idx, url, _)| (idx, url));
+            let target = SaveTarget::Heuristic {
+                found: found_info,
+                key,
+            };
+            (prompt, new_chat, chat_url, label, target)
+        };
     state.log(format!(
         "[请求] {} 条消息, {} 个工具, {}, stream={}",
         messages.len(),
         tools.len(),
-        if found_info.is_some() { "续接对话" } else { "新对话" },
+        mode_label,
         stream
     ));
-
-    let (new_chat, chat_url) = match &found_info {
-        Some((_, url)) => (false, url.clone()),
-        None => (true, None),
-    };
 
     let rx = match ask_provider(&state, &prompt, new_chat, chat_url).await {
         Ok(rx) => rx,
@@ -131,7 +183,13 @@ pub async fn handle(
             out.text(&format!("\n[代理错误] {e}"));
             state.log(format!("[错误] {e}"));
         }
-        save_session(&state, found_info, key, n, final_url, empty_ok && err.is_none());
+        persist_session(
+            &state,
+            &save_target,
+            n,
+            final_url,
+            empty_ok && err.is_none(),
+        );
         state.log(format!(
             "[回复流] {}",
             out.content
@@ -161,7 +219,7 @@ pub async fn handle(
         run_stream(rx, None).await
     };
 
-    finish_non_stream(state, body, found_info, key, n, final_url, err, empty_ok, out, model, msg_id).await
+    finish_non_stream(state, body, save_target, n, final_url, err, empty_ok, out, model, msg_id).await
 }
 
 fn unauthorized() -> Response {
@@ -333,8 +391,7 @@ pub(crate) fn feed(out: &mut Output, pe: ParseEvent) {
 async fn finish_non_stream(
     state: AppState,
     body: Value,
-    found_info: Option<(usize, Option<String>)>,
-    key: String,
+    save_target: SaveTarget,
     n: usize,
     final_url: Option<String>,
     err: Option<String>,
@@ -345,7 +402,7 @@ async fn finish_non_stream(
 ) -> Response {
     if let Some(e) = err {
         state.log(format!("[错误] {e}"));
-        save_session(&state, found_info, key, n, final_url, false);
+        persist_session(&state, &save_target, n, final_url, false);
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
@@ -376,7 +433,7 @@ async fn finish_non_stream(
             .collect::<Vec<_>>()
             .join(", ")
     ));
-    save_session(&state, found_info, key, n, final_url, empty_ok);
+    persist_session(&state, &save_target, n, final_url, empty_ok);
     Json(json!({
         "id": msg_id,
         "type": "message",
@@ -388,6 +445,117 @@ async fn finish_non_stream(
         "usage": usage,
     }))
     .into_response()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SessionMode {
+    New,
+    Continue,
+    ForceContinue,
+    Retry,
+}
+
+impl SessionMode {
+    fn label(self) -> &'static str {
+        match self {
+            SessionMode::New => "新对话",
+            SessionMode::Continue => "续接对话",
+            SessionMode::ForceContinue => "强行续接（历史变短）",
+            SessionMode::Retry => "重试最后一条",
+        }
+    }
+}
+
+fn decide_mode(segment: Option<&crate::session_db::Segment>, n: usize) -> SessionMode {
+    match segment {
+        None => SessionMode::New,
+        Some(s) if n + 1 == s.synced_count && s.retryable => SessionMode::Retry,
+        Some(s) if n > s.synced_count => SessionMode::Continue,
+        Some(s) if n < s.synced_count => SessionMode::ForceContinue,
+        Some(_) => SessionMode::New,
+    }
+}
+
+#[derive(Clone)]
+enum SaveTarget {
+    Heuristic {
+        found: Option<(usize, Option<String>)>,
+        key: String,
+    },
+    Exact {
+        cli_id: String,
+        provider: String,
+        started_chat: Option<String>,
+    },
+}
+
+fn persist_session(
+    state: &AppState,
+    target: &SaveTarget,
+    n: usize,
+    final_url: Option<String>,
+    ok: bool,
+) {
+    match target {
+        SaveTarget::Heuristic { found, key } => {
+            save_session(state, found.clone(), key.clone(), n, final_url, ok)
+        }
+        SaveTarget::Exact {
+            cli_id,
+            provider,
+            started_chat,
+        } => {
+            let Some(url) = final_url else { return };
+            let Some(chat_id) = web_chat_id(&url) else {
+                state.log(format!("[映射] 无法解析网页对话 ID: {url}"));
+                return;
+            };
+            let Some(db) = state.session_db.as_ref() else {
+                return;
+            };
+            let seg = crate::session_db::Segment {
+                cli_session_id: cli_id.clone(),
+                provider: provider.clone(),
+                web_chat_id: chat_id.clone(),
+                web_url: url,
+                synced_count: n + 1,
+                retryable: !ok,
+            };
+            match db.upsert_segment(&seg) {
+                Ok(()) => {
+                    let forked = started_chat
+                        .as_deref()
+                        .map(|started| started != chat_id)
+                        .unwrap_or(false);
+                    state.log(format!(
+                        "[映射] cli={} provider={} chat={} synced={}{}",
+                        cli_id,
+                        provider,
+                        chat_id,
+                        n + 1,
+                        if forked { "（网页已分叉）" } else { "" }
+                    ));
+                }
+                Err(e) => state.log(format!("[映射] 写入失败: {e}")),
+            }
+        }
+    }
+}
+
+fn web_chat_id(url: &str) -> Option<String> {
+    let marker = "/chat/s/";
+    let idx = url.find(marker)?;
+    let rest = &url[idx + marker.len()..];
+    let id = rest
+        .split(['?', '#', '/'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 fn save_session(
@@ -634,4 +802,47 @@ fn parse_tools(body: &Value) -> Vec<ToolSpec> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_db::Segment;
+
+    fn seg(synced_count: usize, retryable: bool) -> Segment {
+        let mut s = Segment::new(
+            "cli",
+            "deepseek",
+            "chat-a",
+            "https://chat.deepseek.com/a/chat/s/chat-a",
+            synced_count,
+        );
+        s.retryable = retryable;
+        s
+    }
+
+    #[test]
+    fn decide_mode_branches() {
+        assert_eq!(decide_mode(None, 2), SessionMode::New);
+        assert_eq!(decide_mode(Some(&seg(2, true)), 1), SessionMode::Retry);
+        assert_eq!(decide_mode(Some(&seg(2, false)), 3), SessionMode::Continue);
+        assert_eq!(
+            decide_mode(Some(&seg(5, false)), 2),
+            SessionMode::ForceContinue
+        );
+        assert_eq!(decide_mode(Some(&seg(3, false)), 3), SessionMode::New);
+    }
+
+    #[test]
+    fn parses_web_chat_id() {
+        assert_eq!(
+            web_chat_id("https://chat.deepseek.com/a/chat/s/abc-123"),
+            Some("abc-123".into())
+        );
+        assert_eq!(
+            web_chat_id("https://chat.deepseek.com/a/chat/s/abc-123?x=1#y"),
+            Some("abc-123".into())
+        );
+        assert_eq!(web_chat_id("https://chat.deepseek.com/"), None);
+    }
 }
