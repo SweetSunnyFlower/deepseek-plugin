@@ -74,37 +74,9 @@ pub async fn handle(State(state): State<AppState>, Json(body): Json<Value>) -> R
         None => (true, None),
     };
 
-    let rx = {
-        let active = {
-            let s = state.settings.read().unwrap();
-            s.active_provider.clone()
-        };
-        let controller = state
-            .providers
-            .get(&active)
-            .cloned()
-            .ok_or_else(|| format!("未知供应商: {active}"));
-        match controller {
-            Err(e) => {
-                return stream_error(&e, stream);
-            }
-            Ok(controller) => {
-                let bridge = state.bridge.clone();
-                let prompt = prompt.clone();
-                match controller
-                    .enqueue(move || {
-                        let bridge = bridge.clone();
-                        let prompt = prompt.clone();
-                        let url = chat_url.clone();
-                        async move { bridge.ask(&prompt, new_chat, url) }
-                    })
-                    .await
-                {
-                    Ok(rx) => rx,
-                    Err(e) => return stream_error(&e, stream),
-                }
-            }
-        }
+    let rx = match ask_provider(&state, &prompt, new_chat, chat_url).await {
+        Ok(rx) => rx,
+        Err(e) => return stream_error(&e, stream),
     };
 
     let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
@@ -160,15 +132,15 @@ pub async fn handle(State(state): State<AppState>, Json(body): Json<Value>) -> R
     finish_non_stream(state, body, found_info, key, n, final_url, err, empty_ok, out, model, msg_id).await
 }
 
-struct Output {
-    content: Vec<Block>,
-    text_len: usize,
+pub(crate) struct Output {
+    pub(crate) content: Vec<Block>,
+    pub(crate) text_len: usize,
     text_open: bool,
     sse: Option<Arc<dyn Fn(&str, Value) + Send + Sync>>,
 }
 
 impl Output {
-    fn new(sse: Option<Arc<dyn Fn(&str, Value) + Send + Sync>>) -> Self {
+    pub(crate) fn new(sse: Option<Arc<dyn Fn(&str, Value) + Send + Sync>>) -> Self {
         Self {
             content: Vec::new(),
             text_len: 0,
@@ -177,7 +149,7 @@ impl Output {
         }
     }
 
-    fn text(&mut self, t: &str) {
+    pub(crate) fn text(&mut self, t: &str) {
         if !self.text_open {
             if t.trim().is_empty() {
                 return;
@@ -205,7 +177,7 @@ impl Output {
         }
     }
 
-    fn tool_use(&mut self, name: String, input: Value) {
+    pub(crate) fn tool_use(&mut self, name: String, input: Value) {
         self.close_text();
         let id = format!(
             "toolu_{}",
@@ -230,7 +202,7 @@ impl Output {
         }
     }
 
-    fn close_text(&mut self) {
+    pub(crate) fn close_text(&mut self) {
         if !self.text_open {
             return;
         }
@@ -241,7 +213,7 @@ impl Output {
         }
     }
 
-    fn stop_reason(&self) -> &'static str {
+    pub(crate) fn stop_reason(&self) -> &'static str {
         if self.content.iter().any(|b| matches!(b, Block::ToolUse { .. })) {
             "tool_use"
         } else {
@@ -250,7 +222,7 @@ impl Output {
     }
 }
 
-async fn run_stream(
+pub(crate) async fn run_stream(
     mut rx: mpsc::UnboundedReceiver<BridgeEvent>,
     sse_tx: Option<mpsc::UnboundedSender<Result<String, std::convert::Infallible>>>,
 ) -> (Output, Option<String>, Option<String>, bool) {
@@ -306,7 +278,7 @@ async fn run_stream(
     (out, final_url, err, empty_ok)
 }
 
-fn feed(out: &mut Output, pe: ParseEvent) {
+pub(crate) fn feed(out: &mut Output, pe: ParseEvent) {
     match pe {
         ParseEvent::Text(t) => out.text(&t),
         ParseEvent::ToolUse { name, input } => out.tool_use(name, input),
@@ -390,6 +362,33 @@ fn save_session(
         url,
         !ok,
     );
+}
+
+pub(crate) async fn ask_provider(
+    state: &AppState,
+    prompt: &str,
+    new_chat: bool,
+    chat_url: Option<String>,
+) -> Result<mpsc::UnboundedReceiver<BridgeEvent>, String> {
+    let active = {
+        let s = state.settings.read().unwrap();
+        s.active_provider.clone()
+    };
+    let controller = state
+        .providers
+        .get(&active)
+        .cloned()
+        .ok_or_else(|| format!("未知供应商: {active}"))?;
+    let bridge = state.bridge.clone();
+    let prompt = prompt.to_string();
+    controller
+        .enqueue(move || {
+            let bridge = bridge.clone();
+            let prompt = prompt.clone();
+            let url = chat_url.clone();
+            async move { bridge.ask(&prompt, new_chat, url) }
+        })
+        .await
 }
 
 fn stream_error(e: &str, stream: bool) -> Response {

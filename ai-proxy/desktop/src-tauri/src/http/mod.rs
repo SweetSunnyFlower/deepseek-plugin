@@ -14,6 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 
 pub mod anthropic;
+pub mod openai;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -22,6 +23,7 @@ pub fn router(state: AppState) -> Router {
         .route("/test", post(test_prompt))
         .route("/v1/messages", post(anthropic::handle))
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
+        .route("/v1/chat/completions", post(openai::handle))
         .with_state(state)
 }
 
