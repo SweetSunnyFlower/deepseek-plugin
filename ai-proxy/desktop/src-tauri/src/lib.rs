@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod bridge;
+pub mod config_manager;
 pub mod http;
 pub mod logs;
 pub mod parser;
