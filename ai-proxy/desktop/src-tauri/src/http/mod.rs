@@ -13,11 +13,15 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 
+pub mod anthropic;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/status", get(status))
         .route("/bridge", get(ws_handler))
         .route("/test", post(test_prompt))
+        .route("/v1/messages", post(anthropic::handle))
+        .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
         .with_state(state)
 }
 
