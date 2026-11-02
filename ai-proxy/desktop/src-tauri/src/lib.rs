@@ -1,5 +1,6 @@
 pub mod parser;
 pub mod provider;
+pub mod settings;
 pub mod types;
 
 use axum::{routing::get, Json, Router};
